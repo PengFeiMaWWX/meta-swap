@@ -147,35 +147,3 @@ sequenceDiagram
     PS-->>U: Return (positionId, L, amount0, amount1)
 ```
 
-## 四、安全机制与风险分析
-
-### 4.1 安全机制：Checks-Effects-Interactions 模式
-
-该项目在核心交易和流动性管理中，通过 **回调机制** 间接实现了 **Checks-Effects-Interactions (CEI) 模式** 的严格遵循：
-
-1.  **Checks (检查)：** 在 `SwapRouter.swapCallback` 中，首先检查调用者是否为预期的 `Pool` 合约，防止未经授权的调用。
-2.  **Effects (影响)：** 在 `Pool.swap` 中，先计算价格变化、更新池内状态（`sqrtPriceX96`、`tick`、`feeGrowthGlobal`），这些是状态变更。
-3.  **Interactions (交互)：** 最后，通过 `swapCallback` 触发外部转账交互（`transferFrom`），确保在所有内部状态更新完成后才进行外部调用。
-
-此外，合约使用了 **`TransferHelper.safeTransfer`** 进行代币转账，这有助于避免因代币合约实现不规范（如返回非布尔值）而导致的交易失败。
-
-### 4.2 潜在安全风险与应对
-
-| 风险类型 | 风险描述 | 项目应对/缓解方案 | 架构师视角分析 |
-| :--- | :--- | :--- | :--- |
-| **重入攻击 (Reentrancy)** | 在 `Pool.swap` 中，如果回调函数 (`swapCallback`) 再次调用 `Pool` 的函数，可能导致状态不一致。 | **回调隔离：** `Pool.sol` 的 `swap` 函数本身不直接进行转账，而是通过 `swapCallback` 机制将转账逻辑隔离到 `SwapRouter`。`SwapRouter` 在回调中只执行 `transferFrom`，没有再次调用 `Pool` 的逻辑。 | **有效缓解：** 这种 V3 模式的**单向回调**设计是防止重入攻击的有效手段。然而，如果 `Pool` 内部有其他未受保护的外部调用，仍需警惕。 |
-| **滑点攻击 (Slippage Attack)** | 恶意用户在交易前通过大额交易操纵价格，或在交易执行期间价格发生剧烈波动。 | **`amountOutMinimum` 和 `sqrtPriceLimitX96`：** `SwapRouter.exactInput` 强制要求用户设置 `amountOutMinimum`（最小输出量）和 `sqrtPriceLimitX96`（价格限制）。 | **标准防护：** 这是 DEX 路由的标准防护措施，确保交易不会因滑点过大而损失。 |
-| **闪电贷攻击 (Flash Loan Attack)** | 攻击者利用闪电贷进行大额套利，操纵价格，并可能导致预言机价格被操纵。 | **TWAP 预言机（未见实现）：** 该项目代码中**未发现** Uniswap V3 核心的 **TWAP (Time-Weighted Average Price)** 预言机实现。 | **风险暴露：** 缺乏 TWAP 机制意味着如果其他协议依赖该池的即时价格作为预言机，将面临**价格操纵风险**。对于依赖价格的借贷或清算协议，这是一个重大安全隐患。 |
-| **治理风险 (Governance Risk)** | 缺乏明确的治理合约，系统参数（如费用）的修改权限可能集中在少数地址。 | **未见治理模块：** 代码中未发现 `Governor.sol` 或类似的复杂治理合约。权限可能由 `Factory` 或 `PoolManager` 的 `owner` 角色控制。 | **中心化风险：** 如果系统参数（如协议费用）由单一地址控制，存在**中心化风险**。建议引入时间锁（Timelock）和去中心化治理机制。 |
-
-## 五、总结与建议
-
-`meta-swap` 项目是一个基于 **Uniswap V3 架构**的 CLMM 实现，其核心优势在于：
-
-1.  **资本效率高：** 集中流动性设计极大地提高了资本利用率。
-2.  **模块化设计：** 遵循 V3 的工厂、池、路由、头寸管理器分离的模块化设计，易于维护和扩展。
-
-**建议：**
-1.  **集成 TWAP 预言机：** 引入 V3 的 TWAP 机制，以提供抗操纵的链上价格数据，增强协议的生态安全性。
-2.  **完善治理机制：** 引入 **OpenZeppelin Governor** 等标准治理合约，将关键参数的修改权限置于社区或多签控制之下，并设置时间锁，降低中心化风险。
-3.  **全面审计：** 在部署主网之前，必须进行全面的智能合约安全审计，特别是针对 V3 复杂数学库的实现细节和回调机制的重入防护。
